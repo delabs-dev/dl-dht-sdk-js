@@ -1,0 +1,5 @@
+src/
+notes/
+tsconfig.json
+*.map
+.DS_Store
