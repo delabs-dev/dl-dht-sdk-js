@@ -1,4 +1,3 @@
-// src/index.ts
 import { P2PDhtClient, type CreateClientOptions } from "./p2pClient.js";
 
 export async function createClient(opts: CreateClientOptions) {
@@ -8,5 +7,9 @@ export async function createClient(opts: CreateClientOptions) {
 }
 
 export { autoAttach } from "./autoAttach.js";
-export type { CreateClientOptions } from "./p2pClient.js";
 export { P2PDhtClient } from "./p2pClient.js";
+export type { CreateClientOptions } from "./p2pClient.js";
+
+// new: convenience exports
+export { makeKey } from "./key.js";
+export { KeyShapeError, NotFoundError, ValueTooLargeError } from "./errors.js";

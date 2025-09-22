@@ -1,5 +1,5 @@
 {
-  "name": "@delabs/dl-dht-sdk-js",
+  "name": "@delabs/dl-dht-sdk",
   "version": "0.1.0-beta.1",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
@@ -12,13 +12,14 @@
   "types": "./dist/index.d.ts",
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "engines": { "node": ">=18" },
-  "files": ["dist"],
+  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rimraf dist",
     "prepublishOnly": "npm run clean && npm run build",
-    "test": "node -e \"console.log('ok')\""
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": ["libp2p","dht","p2p","mesh","web3"],
   "repository": { "type": "git", "url": "git+https://github.com/delabs-dev/dl-dht-sdk-js.git" },
@@ -40,6 +41,7 @@
   "devDependencies": {
     "typescript": "^5.6.3",
     "rimraf": "^6.0.1",
-    "@types/node": "^20.16.10"
+    "@types/node": "^20.16.10",
+    "vitest": "^3.2.4"
   }
 }

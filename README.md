@@ -1,4 +1,4 @@
-# @delabs/dl-dht-sdk-js
+# @delabs/dl-dht-sdk
 
 - Attach-only mesh client for **dl-dht**.
 - Talks JSON-RPC over libp2p to a running dl-dht node (no HTTP).
@@ -23,30 +23,48 @@ docker logs -f dl-dht
 
 ```bash
 # Stable release
-npm i @delabs/dl-dht-sdk-js
+npm i @delabs/dl-dht-sdk
 
 # Or latest beta
-npm i @delabs/dl-dht-sdk-js@beta
+npm i @delabs/dl-dht-sdk@beta
 ```
 
 3) **Use it**:
 
 ```ts
-import { createClient } from "@delabs/dl-dht-sdk-js";
+import { autoAttach, makeKey } from "@delabs/dl-dht-sdk";
 
-const peerId = process.env.DHT_REMOTE_PEER_ID!;
-const addrs  = (process.env.DHT_REMOTE_ADDRS || "/ip4/127.0.0.1/tcp/46345").split(",");
+const c = await autoAttach(); // auto-discovers local node (http://127.0.0.1:46346)
 
-const dht = await createClient({ peerId, addrs });
+// Build a safe key: /<group>/<root>/<path>
+const key = makeKey("ns", "ns-foo-aaaabbbbccccdddd", "sdk", "demo.txt");
 
-await dht.put("/dl/projA/hello", Buffer.from("world"), 3600);
-const v = await dht.get("/dl/projA/hello");
-console.log("got:", v ? Buffer.from(v).toString("utf8") : null);
+await c.put(key, new TextEncoder().encode("hello from sdk"), 3600);
 
-console.log("status:", await dht.status());
+const got = await c.get(key);
+console.log(new TextDecoder().decode(got)); // "hello from sdk"
 
-await dht.stop();
+await c.del(key);
+console.log(await c.get(key)); // null (after delete)
+
+await c.stop();
 ```
+
+## Key format
+
+**All keys are scoped**:
+- /< group >/< root >/< path... >
+
+- Group → one of ns, cert, agent (fixed by dl-dht).
+- Root → a token such as ns-foo-aaaabbbbccccdddd.
+- Path → free-form path segments.
+
+**Examples**:
+-	/ns/ns-ur-6pj0e2r7qz5s3y1f/demo/hello.txt
+-	/cert/cert-xyz1234/public.pem
+-	/agent/agent-foo/logs/2025-09-28.json
+
+Use makeKey(group, root, ...path) to avoid mistakes.
 
 ## API
 
@@ -59,25 +77,30 @@ await dht.stop();
 
 - Protocol default: `/dl/api/1.0.0`
 
+## Errors
+
+The SDK throws typed errors so you can branch:
+-	KeyShapeError — key not well-formed (/< group >/< root >/< path >).
+-	ValueTooLargeError — exceeds per-root byte cap.
+-	NotFoundError — missing record.
+
 ### Advanced usage
 
 - If you want full control, you can use the P2PDhtClient class directly instead of createClient
 
 ```ts
-import { P2PDhtClient } from "@delabs/dl-dht-sdk-js";
+import { P2PDhtClient } from "@delabs/dl-dht-sdk";
 
 const dht = new P2PDhtClient({
   peerId: process.env.DHT_REMOTE_PEER_ID!,
   addrs: (process.env.DHT_REMOTE_ADDRS || "/ip4/127.0.0.1/tcp/46345").split(","),
-  dialTimeoutMs: 15000,      // optional override
-  streamTimeoutMs: 30000     // optional override
+  dialTimeoutMs: 15000,
+  streamTimeoutMs: 30000
 });
 
 await dht.start();
-
-await dht.put("/dl/projA/hello", Buffer.from("advanced"), 600);
-console.log("got:", Buffer.from(await dht.get("/dl/projA/hello") || []).toString());
-
+await dht.put("/ns/ns-foo-aaaabbbbccccdddd/advanced.txt", Buffer.from("advanced"), 600);
+console.log("got:", new TextDecoder().decode(await dht.get("/ns/ns-foo-aaaabbbbccccdddd/advanced.txt")));
 await dht.stop();
 ```
 - This form is useful if you want to manage start() and stop() explicitly, or adjust timeouts and protocol ID.
