@@ -1,4 +1,4 @@
-# @delabs/dl-dht-sdk-js
+# @delabs/dl-dht-sdk
 
 - Attach-only mesh client for **dl-dht**.
 - Talks JSON-RPC over libp2p to a running dl-dht node (no HTTP).
@@ -23,16 +23,16 @@ docker logs -f dl-dht
 
 ```bash
 # Stable release
-npm i @delabs/dl-dht-sdk-js
+npm i @delabs/dl-dht-sdk
 
 # Or latest beta
-npm i @delabs/dl-dht-sdk-js@beta
+npm i @delabs/dl-dht-sdk@beta
 ```
 
 3) **Use it**:
 
 ```ts
-import { createClient } from "@delabs/dl-dht-sdk-js";
+import { createClient } from "@delabs/dl-dht-sdk";
 
 const peerId = process.env.DHT_REMOTE_PEER_ID!;
 const addrs  = (process.env.DHT_REMOTE_ADDRS || "/ip4/127.0.0.1/tcp/46345").split(",");
@@ -64,7 +64,7 @@ await dht.stop();
 - If you want full control, you can use the P2PDhtClient class directly instead of createClient
 
 ```ts
-import { P2PDhtClient } from "@delabs/dl-dht-sdk-js";
+import { P2PDhtClient } from "@delabs/dl-dht-sdk";
 
 const dht = new P2PDhtClient({
   peerId: process.env.DHT_REMOTE_PEER_ID!,
