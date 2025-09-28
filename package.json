@@ -1,6 +1,6 @@
 {
   "name": "@delabs/dl-dht-sdk",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
