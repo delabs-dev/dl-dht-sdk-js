@@ -10,7 +10,15 @@ import { createEd25519PeerId } from "@libp2p/peer-id-factory";
 import { tls } from "@libp2p/tls";
 
 const DBG = !!process.env.DEBUG_DL_DHT;
-function dlog(...a: any[]) { if (DBG) console.debug("[dl-dht]", ...a); }
+function dlog(...a: unknown[]) { if (DBG) console.debug("[dl-dht]", ...a); }
+
+export type DhtStatus = {
+  peerId?: string;
+  conns?: number;
+  rtSize?: number;
+  dhtPrefix?: string;
+  [k: string]: unknown;
+};
 
 export type CreateClientOptions = {
   peerId: string;
@@ -29,7 +37,7 @@ export class P2PDhtClient {
   private streamTimeoutMs: number;
   private started = false;
 
-  constructor(private opts: CreateClientOptions) {
+  constructor(opts: CreateClientOptions) {
     if (!opts?.peerId) throw new Error("peerId is required");
     if (!opts?.addrs?.length) throw new Error("addrs[] must include at least one multiaddr");
     this.remotePeerIdStr = String(opts.peerId).trim();
@@ -63,40 +71,99 @@ export class P2PDhtClient {
     this.started = false;
   }
 
-  async put(key: string, value: Uint8Array | Buffer, ttlSec = 0): Promise<void> {
-    validateKey(key);
-    const req = { op: "put", key, ttl: ttlSec || undefined, value: toU8(value) };
-    const r = await this.rpc(req);
+  async putObject(value: Uint8Array): Promise<string> {
+    const r = await this.rpc({ op: "putObject", value: toU8(value) });
     if (r.err) throw new Error(r.err);
+    const out = r.value ? u8To(r.value, "utf8").trim() : "";
+    if (!out) throw new Error("putObject returned empty object ID");
+    return out;
   }
 
-  async get(key: string): Promise<Uint8Array | null> {
-    validateKey(key);
-    const r = await this.rpc({ op: "get", key });
+  async getObject(objectId: string): Promise<Uint8Array | null> {
+    validateObjectId(objectId);
+    const r = await this.rpc({ op: "getObject", objectId });
     if (r.err === "not found") return null;
     if (r.err) throw new Error(r.err);
     return (r.value as Uint8Array) ?? null;
   }
 
-  async del(key: string): Promise<void> {
-    validateKey(key);
-    const r = await this.rpc({ op: "del", key });
+  async findProviders(objectId: string): Promise<Array<{ peerId: string; addrs: string[] }>> {
+    validateObjectId(objectId);
+    const r = await this.rpc({ op: "findProviders", objectId });
+    if (r.err) throw new Error(r.err);
+    if (!(r.value instanceof Uint8Array)) return [];
+    const txt = u8To(r.value, "utf8").trim();
+    return txt ? JSON.parse(txt) : [];
+  }
+
+  async fetchObject(objectId: string): Promise<Uint8Array | null> {
+    validateObjectId(objectId);
+    const r = await this.rpc({ op: "fetchObject", objectId });
+    if (r.err === "not found") return null;
+    if (r.err) throw new Error(r.err);
+    return (r.value as Uint8Array) ?? null;
+  }
+
+  async pinObject(objectId: string): Promise<void> {
+    validateObjectId(objectId);
+    const r = await this.rpc({ op: "pinObject", objectId });
     if (r.err) throw new Error(r.err);
   }
 
-  async status(): Promise<any> {
+  async unpinObject(objectId: string): Promise<void> {
+    validateObjectId(objectId);
+    const r = await this.rpc({ op: "unpinObject", objectId });
+    if (r.err) throw new Error(r.err);
+  }
+
+  async status(): Promise<DhtStatus> {
     const r = await this.rpc({ op: "status" });
     if (r.err) throw new Error(r.err);
 
-    // Server returns {value:<json-bytes>} — decode that
     if (r.value instanceof Uint8Array) {
       const txt = u8To(r.value, "utf8").trim();
-      return txt ? JSON.parse(txt) : {};
+      if (!txt) throw new Error("empty status response");
+      return JSON.parse(txt) as DhtStatus;
     }
-    // Or sometimes a direct JSON object with status fields
-    if (r && typeof r === "object" && !("value" in r)) return r;
 
-    return {};
+    if (r && typeof r === "object" && !("value" in r)) {
+      return r as DhtStatus;
+    }
+
+    throw new Error("invalid status response");
+  }
+
+  async announceDiscovery(
+    discoveryKey: string,
+    registrationRef: string,
+    ttlSec: number
+  ): Promise<void> {
+    if (!discoveryKey) throw new Error("discoveryKey required");
+    if (!registrationRef) throw new Error("registrationRef required");
+
+    const res = await this.rpc({
+      op: "announceDiscovery",
+      discoveryKey,
+      registrationRef,
+      ttlSec,
+    });
+
+    if (res.err) throw new Error(res.err);
+  }
+
+  async lookupDiscovery(discoveryKey: string): Promise<string[]> {
+    if (!discoveryKey) throw new Error("discoveryKey required");
+
+    const res = await this.rpc({
+      op: "lookupDiscovery",
+      discoveryKey,
+    });
+
+    if (res.err) throw new Error(res.err);
+    if (!res.value) return [];
+
+    const txt = Buffer.from(res.value).toString("utf8").trim();
+    return txt ? (JSON.parse(txt) as string[]) : [];
   }
 
   private async probeProtocols(target: Multiaddr): Promise<string[]> {
@@ -150,6 +217,10 @@ export class P2PDhtClient {
             const u8 = toU8(reqToSend.value);
             reqToSend.value = Buffer.from(u8).toString("base64");
           }
+          if (reqToSend.record != null) {
+            const u8 = toU8(reqToSend.record);
+            reqToSend.record = Buffer.from(u8).toString("base64");
+          }
           const json = JSON.stringify(reqToSend) + "\n";
 
           // Write request, then half-close write so Go's json.Decoder returns
@@ -197,23 +268,22 @@ export class P2PDhtClient {
 
 // ---------------- utils ----------------
 
-function validateKey(fullKey: string) {
-  const s = (fullKey || "").trim();
-  if (!s.startsWith("/")) throw new Error(`key must start with "/" (got ${JSON.stringify(fullKey)})`);
-  const rest = s.slice(1);
-  const i = rest.indexOf("/");
-  if (i <= 0 || i === rest.length - 1) throw new Error(`key must look like /<namespace>/<key> (got ${JSON.stringify(fullKey)})`);
-  const ns = rest.slice(0, i);
-  if (ns.includes(" ")) throw new Error("namespace must not contain spaces");
+function validateObjectId(objectId: string) {
+  const s = String(objectId || "").trim();
+  if (!/^sha256:[0-9a-f]{64}$/.test(s)) {
+    throw new Error(`objectId must look like sha256:<64 hex> (got ${JSON.stringify(objectId)})`);
+  }
 }
-function toU8(x: Uint8Array | Buffer): Uint8Array { return x instanceof Uint8Array ? x : new Uint8Array(x); }
-function concatU8(arrs: Uint8Array[]): Uint8Array {
-  const total = arrs.reduce((n, a) => n + a.length, 0);
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const a of arrs) { out.set(a, off); off += a.length; }
-  return out;
+
+function toU8(x: Uint8Array | ArrayBufferLike | ArrayLike<number>): Uint8Array {
+  if (x instanceof Uint8Array) return x;
+  if (x instanceof ArrayBuffer) return new Uint8Array(x);
+  if (typeof SharedArrayBuffer !== "undefined" && x instanceof SharedArrayBuffer) {
+    return new Uint8Array(x);
+  }
+  return new Uint8Array(x as ArrayLike<number>);
 }
+
 async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let to: any;
   try { return await Promise.race([p, new Promise<T>((_, rej) => (to = setTimeout(() => rej(new Error(label)), ms)))]); }

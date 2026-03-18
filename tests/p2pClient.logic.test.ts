@@ -1,59 +1,70 @@
 import { describe, it, expect } from "vitest";
 import { P2PDhtClient } from "../src/p2pClient.js";
 
-const peerId = "12D3KooWTestPeerIdDontCare";
-const addrs = ["/ip4/127.0.0.1/tcp/46345"]; // never dialed in these tests
+const peerId = "12D3KooWQ111111111111111111111111111111111111111111";
+const addrs = ["/ip4/127.0.0.1/tcp/46345"];
 
-describe("P2PDhtClient local logic", () => {
-  it("throws on invalid key shapes (validateKey)", async () => {
+describe("P2PDhtClient logic", () => {
+  it("status decodes JSON from rpc value", async () => {
     const c = new P2PDhtClient({ peerId, addrs });
 
-    await expect(async () => {
-      // missing leading slash
-      await (c as any).put("ur/test", new Uint8Array([1, 2, 3]), 10);
-    }).rejects.toThrow();
+    (c as any).rpc = async () => ({
+      value: new TextEncoder().encode(
+        JSON.stringify({
+          peerId: "12D3KooWabc",
+          conns: 2,
+          rtSize: 7,
+          dhtPrefix: "/dl",
+        })
+      ),
+    });
 
-    await expect(async () => {
-      // only one segment
-      await (c as any).put("/ur", new Uint8Array([1, 2, 3]), 10);
-    }).rejects.toThrow();
-
-    await expect(async () => {
-      // namespace has a space
-      await (c as any).put("/ur team/test", new Uint8Array([1, 2, 3]), 10);
-    }).rejects.toThrow();
+    const st = await c.status();
+    expect(st.peerId).toBe("12D3KooWabc");
+    expect(st.conns).toBe(2);
+    expect(st.rtSize).toBe(7);
+    expect(st.dhtPrefix).toBe("/dl");
   });
 
-  it("get()/status() can parse minimal rpc responses when rpc is stubbed", async () => {
+  it("lookupDiscovery returns empty array for empty response body", async () => {
     const c = new P2PDhtClient({ peerId, addrs });
 
-    // stub rpc to avoid network:
+    (c as any).rpc = async () => ({
+      value: new TextEncoder().encode("   "),
+    });
+
+    const refs = await c.lookupDiscovery("tld:uma");
+    expect(refs).toEqual([]);
+  });
+
+  it("discovery methods can parse stubbed rpc responses", async () => {
+    const c = new P2PDhtClient({ peerId, addrs });
+
     (c as any).rpc = async (req: any) => {
-      if (req.op === "get") {
-        // emulate: { value: <Uint8Array> }
-        return { value: new TextEncoder().encode("ok") };
-      }
-      if (req.op === "status") {
-        // emulate: { value: <Uint8Array(JSON)> }
-        const json = JSON.stringify({ peerId: "X", conns: 1, rtSize: 2, dhtPrefix: "/dl", store: { ur: 1 } });
-        return { value: new TextEncoder().encode(json) };
+      if (req.op === "announceDiscovery") return {};
+      if (req.op === "lookupDiscovery") {
+        return {
+          value: new TextEncoder().encode(
+            JSON.stringify([
+              "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ])
+          ),
+        };
       }
       return {};
     };
 
-    const v = await c.get("/dl/ur/key");
-    expect(v && new TextDecoder().decode(v)).toBe("ok");
+    await expect(
+      c.announceDiscovery(
+        "tld:uma",
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        21600
+      )
+    ).resolves.toBeUndefined();
 
-    const st = await c.status();
-    expect(st).toMatchObject({ peerId: "X", conns: 1, rtSize: 2, dhtPrefix: "/dl" });
-  });
-
-  it("buildTargets appends /p2p/<peerId> when missing", () => {
-    const c = new P2PDhtClient({ peerId, addrs: ["/ip4/1.2.3.4/tcp/1111"] });
-    const targets = (c as any).buildTargets();
-    expect(Array.isArray(targets)).toBe(true);
-    const s = targets[0].toString();
-    expect(s).toContain("/p2p/");
-    expect(s.endsWith(`/p2p/${peerId}`)).toBe(true);
+    const refs = await c.lookupDiscovery("tld:uma");
+    expect(refs).toEqual([
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ]);
   });
 });

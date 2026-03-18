@@ -1,9 +1,14 @@
 import { describe, it, expect } from "vitest";
 import * as mod from "../src/index.js";
 
-describe("package exports", () => {
-  it("exports createClient and P2PDhtClient", () => {
-    expect(typeof (mod as any).createClient).toBe("function");
-    expect(typeof (mod as any).P2PDhtClient).toBe("function");
+describe("index exports", () => {
+  it("exports runtime API surface", () => {
+    expect(typeof mod.createClient).toBe("function");
+    expect(typeof mod.autoAttach).toBe("function");
+    expect(typeof mod.P2PDhtClient).toBe("function");
+  });
+
+  it("does not export internal helpers", () => {
+    expect((mod as any).validateObjectId).toBeUndefined();
   });
 });

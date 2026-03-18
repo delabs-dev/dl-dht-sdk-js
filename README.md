@@ -1,124 +1,212 @@
 # @delabs/dl-dht-sdk
 
-- Attach-only mesh client for **dl-dht**.
-- Talks JSON-RPC over libp2p to a running dl-dht node (no HTTP).
-- Node.js 22+ required.
-- This package does **not** install Docker or the dl-dht node. Run the node yourself (Docker or bare metal) and attach to it.
+JavaScript/TypeScript SDK for attaching to a running `dl-dht` node over libp2p RPC.
+
+This SDK is for **remote-safe node operations**, including:
+
+- object put/get/fetch/provider lookup
+- pin / unpin
+- node status
+- discovery announce / lookup
+
+This SDK does **not** expose local operator-only storage actions such as:
+
+- list pinned objects
+- list unpinned objects
+- object stats
+- object delete
+- object GC
+
+Those remain local-only in `dl-dht`.
+
+## Install
+
+```bash
+npm install @delabs/dl-dht-sdk
+```
 
 ## Quick start
 
-1) **Run a dl-dht node** with Docker Compose:
-
-```bash
-curl -O https://raw.githubusercontent.com/delabs-dev/dl-dht/main/docker-compose.yml
-docker compose up -d
-```
-
-```bash
-# Check logs to find the PeerID and multiaddrs
-docker logs -f dl-dht
-```
-
-2) **Install the client**:
-
-```bash
-# Stable release
-npm i @delabs/dl-dht-sdk
-
-# Or latest beta
-npm i @delabs/dl-dht-sdk@beta
-```
-
-3) **Use it**:
+### Auto-attach to a local node
 
 ```ts
-import { autoAttach, makeKey } from "@delabs/dl-dht-sdk";
+import { autoAttach } from "@delabs/dl-dht-sdk";
 
-const c = await autoAttach(); // auto-discovers local node (http://127.0.0.1:46346)
+const dht = await autoAttach({
+  httpURL: "http://127.0.0.1:46346",
+});
 
-// Build a safe key: /<group>/<root>/<path>
-const key = makeKey("ns", "ns-foo-aaaabbbbccccdddd", "sdk", "demo.txt");
+const status = await dht.status();
+console.log(status);
 
-await c.put(key, new TextEncoder().encode("hello from sdk"), 3600);
-
-const got = await c.get(key);
-console.log(new TextDecoder().decode(got)); // "hello from sdk"
-
-await c.del(key);
-console.log(await c.get(key)); // null (after delete)
-
-await c.stop();
+await dht.stop();
 ```
 
-## Key format
+### Create a client directly
 
-**All keys are scoped**:
-- /< group >/< root >/< path... >
+```ts
+import { createClient } from "@delabs/dl-dht-sdk";
 
-- Group → one of ns, cert, agent (fixed by dl-dht).
-- Root → a token such as ns-foo-aaaabbbbccccdddd.
-- Path → free-form path segments.
+const dht = await createClient({
+  peerId: "12D3Koo...",
+  addrs: ["/ip4/127.0.0.1/tcp/46345"],
+});
 
-**Examples**:
--	/ns/ns-ur-6pj0e2r7qz5s3y1f/demo/hello.txt
--	/cert/cert-xyz1234/public.pem
--	/agent/agent-foo/logs/2025-09-28.json
+const status = await dht.status();
+console.log(status);
 
-Use makeKey(group, root, ...path) to avoid mistakes.
+await dht.stop();
+```
+## Object API
+
+### Put object
+
+```ts
+const objectId = await dht.putObject(
+  new TextEncoder().encode(JSON.stringify({ hello: "world" }))
+);
+
+console.log(objectId); // sha256:...
+```
+
+### Get local object
+
+```ts
+const bytes = await dht.getObject(objectId);
+console.log(new TextDecoder().decode(bytes));
+```
+
+### Fetch object from network
+
+```ts
+const bytes = await dht.fetchObject(objectId);
+console.log(new TextDecoder().decode(bytes));
+```
+
+### Find providers
+
+```ts
+const providers = await dht.findProviders(objectId);
+console.log(providers);
+```
+
+### Pin / unpin
+
+```ts
+await dht.pinObject(objectId);
+await dht.unpinObject(objectId);
+```
+
+## Discovery API
+
+### Announce discovery
+
+```ts
+await dht.announceDiscovery(
+  "tld:xyz",
+  "sha256:xxx",
+  21600
+);
+```
+
+## Lookup discovery
+
+``` ts
+const refs = await dht.lookupDiscovery("tld:uma");
+
+console.log(refs);
+```
+
+Example output:
+
+``` ts
+[
+  "sha256:abc...",
+  "sha256:def..."
+]
+```
 
 ## API
 
-- `createClient({ peerId, addrs, protocolId?, dialTimeoutMs?, streamTimeoutMs? }) → Promise<P2PDhtClient> Returns a ready-to-use P2PDhtClient instance.`
-- `P2PDhtClient#put(key, value, ttlSec?)`
-- `P2PDhtClient#get(key) → Uint8Array|null`
-- `P2PDhtClient#del(key)`
-- `P2PDhtClient#status() → any`
-- `P2PDhtClient#stop()`
+### autoAttach(opts?)
 
-- Protocol default: `/dl/api/1.0.0`
+Auto-discovers a local dl-dht node using its HTTP helper endpoints.
 
-## Errors
+Options:
 
-The SDK throws typed errors so you can branch:
--	KeyShapeError — key not well-formed (/< group >/< root >/< path >).
--	ValueTooLargeError — exceeds per-root byte cap.
--	NotFoundError — missing record.
+-   `httpURL?: string` --- base HTTP URL (default:
+    `http://127.0.0.1:46346`)
 
-### Advanced usage
+Returns a started `P2PDhtClient`.
 
-- If you want full control, you can use the P2PDhtClient class directly instead of createClient
+### createClient(opts)
 
-```ts
-import { P2PDhtClient } from "@delabs/dl-dht-sdk";
+Creates and starts a client directly.
 
-const dht = new P2PDhtClient({
-  peerId: process.env.DHT_REMOTE_PEER_ID!,
-  addrs: (process.env.DHT_REMOTE_ADDRS || "/ip4/127.0.0.1/tcp/46345").split(","),
-  dialTimeoutMs: 15000,
-  streamTimeoutMs: 30000
-});
+Options:
 
-await dht.start();
-await dht.put("/ns/ns-foo-aaaabbbbccccdddd/advanced.txt", Buffer.from("advanced"), 600);
-console.log("got:", new TextDecoder().decode(await dht.get("/ns/ns-foo-aaaabbbbccccdddd/advanced.txt")));
-await dht.stop();
-```
-- This form is useful if you want to manage start() and stop() explicitly, or adjust timeouts and protocol ID.
+-   `peerId: string`
+-   `addrs: string[]`
+-   `protocolId?: string`
+-   `dialTimeoutMs?: number`
+-   `streamTimeoutMs?: number`
 
-### Which one should I use?
+Returns a started `P2PDhtClient`.
 
-| Use case                         | `createClient(...)`                              | `new P2PDhtClient(...)`                        |
-|----------------------------------|--------------------------------------------------|------------------------------------------------|
-| Quick start / simplest setup     | ✅ Best choice                                   | Possible, but overkill                         |
-| Auto-start lifecycle             | ✅ Automatically starts                          | ❌ You call `start()` / `stop()` yourself      |
-| Sensible defaults (timeouts etc) | ✅ Built-in                                      | ➖ You can override everything                  |
-| Fine-grained control             | ➖ Limited                                       | ✅ Full control over timeouts & protocol ID     |
-| Custom connection management     | ➖ Minimal knobs                                  | ✅ You decide when to reuse/restart clients     |
-| Advanced debugging               | ➖ Basic                                          | ✅ Pair with `DEBUG_DL_DHT=1` for deep logs     |
-| Library/framework integration    | ✅ Simple DI                                      | ✅ Useful when you need explicit lifecycle      |
+### P2PDhtClient
 
-**Rule of thumb:**  
-Start with `createClient` for almost everything. Reach for `P2PDhtClient` when you need explicit lifecycle control or tuning.
+Methods:
+
+    start()
+    stop()
+
+    status()
+
+    putObject(bytes)
+    getObject(objectId)
+    fetchObject(objectId)
+    findProviders(objectId)
+
+    pinObject(objectId)
+    unpinObject(objectId)
+
+    announceDiscovery(discoveryKey, registrationRef, ttlSec)
+    lookupDiscovery(discoveryKey)
+
+Return types:
+
+    status() → Promise<{ peerId?: string; conns?: number; rtSize?: number; dhtPrefix?: string }>
+
+    putObject(bytes) → Promise<string>
+
+    getObject(objectId) → Promise<Uint8Array | null>
+    fetchObject(objectId) → Promise<Uint8Array | null>
+
+    findProviders(objectId)
+      → Promise<Array<{ peerId: string; addrs: string[] }>>
+
+    pinObject(objectId) → Promise<void>
+    unpinObject(objectId) → Promise<void>
+
+    announceDiscovery(discoveryKey, registrationRef, ttlSec)
+      → Promise<void>
+
+    lookupDiscovery(discoveryKey)
+      → Promise<string[]>
+
+## Notes
+
+Object IDs must look like:
+
+    sha256:<64 lowercase hex chars>
+
+Additional notes:
+
+-   This SDK is intentionally limited to **remote-safe operations**.
+-   Local operator lifecycle controls remain in `dl-dht`.
+-   This SDK does **not start a dl-dht node**.
+-   Run the daemon separately and then attach to it.
+-   The default RPC protocol is `/dl/api/1.0.0`.
 
 ## License
 MIT © DeLabs
