@@ -68,3 +68,74 @@ describe("P2PDhtClient logic", () => {
     ]);
   });
 });
+
+describe("client mode restrictions", () => {
+  function makeClientWithError(errMsg: string) {
+    const c = new P2PDhtClient({
+      peerId: "12D3KooTestPeer",
+      addrs: ["/ip4/127.0.0.1/tcp/1234"]
+    });
+
+    (c as any).rpc = async () => ({ err: errMsg });
+    return c;
+  }
+
+  it("putObject rejects in restricted node mode", async () => {
+    const c = makeClientWithError("putObject not allowed in this node mode");
+    await expect(c.putObject(new Uint8Array([1, 2, 3])))
+      .rejects.toThrow(/node mode/i);
+  });
+
+  it("retainObject rejects in restricted node mode", async () => {
+    const c = makeClientWithError("retainObject not allowed in this node mode");
+    await expect(c.retainObject("sha256:" + "a".repeat(64), 60))
+      .rejects.toThrow(/node mode/i);
+  });
+
+  it("pinObject rejects in restricted node mode", async () => {
+    const c = makeClientWithError("pinObject not allowed in this node mode");
+    await expect(c.pinObject("sha256:" + "a".repeat(64)))
+      .rejects.toThrow(/node mode/i);
+  });
+
+  it("unpinObject rejects in restricted node mode", async () => {
+    const c = makeClientWithError("unpinObject not allowed in this node mode");
+    await expect(c.unpinObject("sha256:" + "a".repeat(64)))
+      .rejects.toThrow(/node mode/i);
+  });
+
+  it("announceDiscovery rejects in restricted node mode", async () => {
+    const c = makeClientWithError("announceDiscovery not allowed in this node mode");
+    await expect(c.announceDiscovery("key", "ref", 60))
+      .rejects.toThrow(/node mode/i);
+  });
+
+  it("getCapabilities includes canRetainObject", async () => {
+    const c = new P2PDhtClient({ peerId, addrs });
+
+    (c as any).rpc = async () => ({
+      value: new TextEncoder().encode(JSON.stringify({
+        mode: "edge",
+        canPutObject: true,
+        canRetainObject: true,
+        canPinObject: false,
+        canUnpinObject: false,
+        canAnnounceDiscovery: false,
+        provideFetchedObjects: false,
+        relayServiceEnabled: false,
+      }))
+    });
+
+    await expect(c.getCapabilities()).resolves.toEqual({
+      mode: "edge",
+      canPutObject: true,
+      canRetainObject: true,
+      canPinObject: false,
+      canUnpinObject: false,
+      canAnnounceDiscovery: false,
+      provideFetchedObjects: false,
+      relayServiceEnabled: false,
+    });
+    await expect(c.canRetainObject()).resolves.toBe(true);
+  });
+});

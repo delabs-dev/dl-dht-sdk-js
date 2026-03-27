@@ -4,9 +4,10 @@ JavaScript/TypeScript SDK for attaching to a running `dl-dht` node over libp2p R
 
 This SDK is for **remote-safe node operations**, including:
 
-- object put/get/fetch/provider lookup
+- object put / get / fetch / provider lookup
+- object retain
 - pin / unpin
-- node status
+- node status and capability checks
 - discovery announce / lookup
 
 This SDK does **not** expose local operator-only storage actions such as:
@@ -19,11 +20,32 @@ This SDK does **not** expose local operator-only storage actions such as:
 
 Those remain local-only in `dl-dht`.
 
+---
+
+## How dl-dht works
+
+- Objects are **content-addressed** (`sha256:<hash>`)
+- Nodes that store objects become **providers**
+- Clients:
+  - discover providers via DHT
+  - fetch objects from them
+
+Typical flow:
+
+1. `putObject` → store locally + announce provider
+2. `findProviders` → discover peers storing object
+3. `fetchObject` → retrieve object from network
+4. `retainObject` / `pinObject` → control local persistence
+
+---
+
 ## Install
 
 ```bash
 npm install @delabs/dl-dht-sdk
 ```
+
+---
 
 ## Quick start
 
@@ -57,6 +79,40 @@ console.log(status);
 
 await dht.stop();
 ```
+
+---
+
+## End-to-end example
+
+```ts
+import { createClient } from "@delabs/dl-dht-sdk";
+
+const dht = await createClient({
+  peerId: "12D3Koo...",
+  addrs: ["/ip4/127.0.0.1/tcp/46345"],
+});
+
+// 1. Put object
+const objectId = await dht.putObject(
+  new TextEncoder().encode("hello dl-dht")
+);
+
+// 2. Find providers
+const providers = await dht.findProviders(objectId);
+console.log("providers:", providers);
+
+// 3. Fetch from network
+const data = await dht.fetchObject(objectId);
+console.log("fetched:", new TextDecoder().decode(data));
+
+// 4. Retain locally
+await dht.retainObject(objectId, 3600);
+
+await dht.stop();
+```
+
+---
+
 ## Object API
 
 ### Put object
@@ -65,148 +121,111 @@ await dht.stop();
 const objectId = await dht.putObject(
   new TextEncoder().encode(JSON.stringify({ hello: "world" }))
 );
-
-console.log(objectId); // sha256:...
 ```
 
 ### Get local object
 
 ```ts
 const bytes = await dht.getObject(objectId);
-console.log(new TextDecoder().decode(bytes));
 ```
 
 ### Fetch object from network
 
 ```ts
 const bytes = await dht.fetchObject(objectId);
-console.log(new TextDecoder().decode(bytes));
 ```
 
 ### Find providers
 
 ```ts
 const providers = await dht.findProviders(objectId);
-console.log(providers);
 ```
 
-### Pin / unpin
+### Retain / pin / unpin
 
 ```ts
+await dht.retainObject(objectId, 3600);
 await dht.pinObject(objectId);
 await dht.unpinObject(objectId);
 ```
+
+---
 
 ## Discovery API
 
 ### Announce discovery
 
 ```ts
-await dht.announceDiscovery(
-  "tld:xyz",
-  "sha256:xxx",
-  21600
-);
+await dht.announceDiscovery("tld:xyz", "sha256:xxx", 21600);
 ```
 
-## Lookup discovery
+### Lookup discovery
 
-``` ts
+```ts
 const refs = await dht.lookupDiscovery("tld:uma");
-
-console.log(refs);
 ```
 
-Example output:
+---
 
-``` ts
-[
-  "sha256:abc...",
-  "sha256:def..."
-]
+## Node roles (client vs edge vs server)
+
+| Mode   | putObject | retainObject | pinObject | announceDiscovery | fetchObject |
+|--------|----------|--------------|----------|-------------------|------------|
+| client | ❌       | ❌           | ❌       | ❌                | ✅         |
+| edge   | ✅       | ✅           | ❌       | ❌                | ✅         |
+| server | ✅       | ✅           | ✅       | ✅                | ✅         |
+
+---
+
+## Single-node behavior
+
+If you run only one node, you may see warnings like:
+
 ```
+failed to find any peer in table
+```
+
+This is expected.
+
+Provider announcements and routing require multiple peers.  
+Run at least 2 nodes for full network behavior.
+
+---
 
 ## API
 
 ### autoAttach(opts?)
 
-Auto-discovers a local dl-dht node using its HTTP helper endpoints.
-
-Options:
-
--   `httpURL?: string` --- base HTTP URL (default:
-    `http://127.0.0.1:46346`)
-
-Returns a started `P2PDhtClient`.
+Auto-discovers a local dl-dht node.
 
 ### createClient(opts)
 
-Creates and starts a client directly.
+Creates a client directly.
 
-Options:
+### Methods
 
--   `peerId: string`
--   `addrs: string[]`
--   `protocolId?: string`
--   `dialTimeoutMs?: number`
--   `streamTimeoutMs?: number`
+- status()
+- putObject()
+- getObject()
+- fetchObject()
+- findProviders()
+- retainObject()
+- pinObject()
+- unpinObject()
+- announceDiscovery()
+- lookupDiscovery()
 
-Returns a started `P2PDhtClient`.
-
-### P2PDhtClient
-
-Methods:
-
-    start()
-    stop()
-
-    status()
-
-    putObject(bytes)
-    getObject(objectId)
-    fetchObject(objectId)
-    findProviders(objectId)
-
-    pinObject(objectId)
-    unpinObject(objectId)
-
-    announceDiscovery(discoveryKey, registrationRef, ttlSec)
-    lookupDiscovery(discoveryKey)
-
-Return types:
-
-    status() → Promise<{ peerId?: string; conns?: number; rtSize?: number; dhtPrefix?: string }>
-
-    putObject(bytes) → Promise<string>
-
-    getObject(objectId) → Promise<Uint8Array | null>
-    fetchObject(objectId) → Promise<Uint8Array | null>
-
-    findProviders(objectId)
-      → Promise<Array<{ peerId: string; addrs: string[] }>>
-
-    pinObject(objectId) → Promise<void>
-    unpinObject(objectId) → Promise<void>
-
-    announceDiscovery(discoveryKey, registrationRef, ttlSec)
-      → Promise<void>
-
-    lookupDiscovery(discoveryKey)
-      → Promise<string[]>
+---
 
 ## Notes
 
-Object IDs must look like:
+- Object IDs must look like: `sha256:<64 lowercase hex>`
+- This SDK is remote-safe only
+- Does not start a node
+- Default RPC protocol: `/dl/api/1.0.0`
+- Some operations depend on node mode
 
-    sha256:<64 lowercase hex chars>
-
-Additional notes:
-
--   This SDK is intentionally limited to **remote-safe operations**.
--   Local operator lifecycle controls remain in `dl-dht`.
--   This SDK does **not start a dl-dht node**.
--   Run the daemon separately and then attach to it.
--   The default RPC protocol is `/dl/api/1.0.0`.
+---
 
 ## License
 MIT © DeLabs

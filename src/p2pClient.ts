@@ -17,6 +17,20 @@ export type DhtStatus = {
   conns?: number;
   rtSize?: number;
   dhtPrefix?: string;
+
+  mode?: string;
+  canPutObject?: boolean;
+  canRetainObject?: boolean;
+  canPinObject?: boolean;
+  canUnpinObject?: boolean;
+  canAnnounceDiscovery?: boolean;
+  provideFetchedObjects?: boolean;
+  relayServiceEnabled?: boolean;
+
+  objectStoreMaxBytes?: number;
+  objectStoreUsageBytes?: number;
+  objectStoreUnpinnedGCPolicy?: string;
+
   [k: string]: unknown;
 };
 
@@ -73,7 +87,12 @@ export class P2PDhtClient {
 
   async putObject(value: Uint8Array): Promise<string> {
     const r = await this.rpc({ op: "putObject", value: toU8(value) });
-    if (r.err) throw new Error(r.err);
+    if (r.err) {
+      if (/not allowed in (this )?node mode/i.test(r.err)) {
+        throw new Error("putObject is not allowed by the connected dl-dht node mode");
+      }
+      throw new Error(r.err);
+    }
     const out = r.value ? u8To(r.value, "utf8").trim() : "";
     if (!out) throw new Error("putObject returned empty object ID");
     return out;
@@ -104,16 +123,40 @@ export class P2PDhtClient {
     return (r.value as Uint8Array) ?? null;
   }
 
+  async retainObject(objectId: string, ttlSec: number): Promise<void> {
+    validateObjectId(objectId);
+    if (!Number.isFinite(ttlSec) || ttlSec <= 0) {
+      throw new Error("ttlSec must be > 0");
+    }
+    const r = await this.rpc({ op: "retainObject", objectId, retainTtlSec: Math.trunc(ttlSec) });
+    if (r.err) {
+      if (/not allowed in (this )?node mode/i.test(r.err)) {
+        throw new Error("retainObject is not allowed by the connected dl-dht node mode");
+      }
+      throw new Error(r.err);
+    }
+  }
+
   async pinObject(objectId: string): Promise<void> {
     validateObjectId(objectId);
     const r = await this.rpc({ op: "pinObject", objectId });
-    if (r.err) throw new Error(r.err);
+    if (r.err) {
+      if (/not allowed in (this )?node mode/i.test(r.err)) {
+        throw new Error("pinObject is not allowed by the connected dl-dht node mode");
+      }
+      throw new Error(r.err);
+    }
   }
 
   async unpinObject(objectId: string): Promise<void> {
     validateObjectId(objectId);
     const r = await this.rpc({ op: "unpinObject", objectId });
-    if (r.err) throw new Error(r.err);
+    if (r.err) {
+      if (/not allowed in (this )?node mode/i.test(r.err)) {
+        throw new Error("unpinObject is not allowed by the connected dl-dht node mode");
+      }
+      throw new Error(r.err);
+    }
   }
 
   async status(): Promise<DhtStatus> {
@@ -133,6 +176,49 @@ export class P2PDhtClient {
     throw new Error("invalid status response");
   }
 
+  async getCapabilities(): Promise<{
+    mode?: string;
+    canPutObject: boolean;
+    canRetainObject: boolean;
+    canPinObject: boolean;
+    canUnpinObject: boolean;
+    canAnnounceDiscovery: boolean;
+    provideFetchedObjects: boolean;
+    relayServiceEnabled: boolean;
+  }> {
+    const st = await this.status();
+    return {
+      ...(st.mode !== undefined ? { mode: st.mode } : {}),
+      canPutObject: !!st.canPutObject,
+      canRetainObject: !!st.canRetainObject,
+      canPinObject: !!st.canPinObject,
+      canUnpinObject: !!st.canUnpinObject,
+      canAnnounceDiscovery: !!st.canAnnounceDiscovery,
+      provideFetchedObjects: !!st.provideFetchedObjects,
+      relayServiceEnabled: !!st.relayServiceEnabled,
+    };
+  }
+
+  async canPutObject(): Promise<boolean> {
+    return (await this.getCapabilities()).canPutObject;
+  }
+
+  async canRetainObject(): Promise<boolean> {
+    return (await this.getCapabilities()).canRetainObject;
+  }
+
+  async canPinObject(): Promise<boolean> {
+    return (await this.getCapabilities()).canPinObject;
+  }
+
+  async canUnpinObject(): Promise<boolean> {
+    return (await this.getCapabilities()).canUnpinObject;
+  }
+
+  async canAnnounceDiscovery(): Promise<boolean> {
+    return (await this.getCapabilities()).canAnnounceDiscovery;
+  }
+
   async announceDiscovery(
     discoveryKey: string,
     registrationRef: string,
@@ -148,7 +234,12 @@ export class P2PDhtClient {
       ttlSec,
     });
 
-    if (res.err) throw new Error(res.err);
+    if (res.err) {
+      if (/not allowed in (this )?node mode/i.test(res.err)) {
+        throw new Error("announceDiscovery is not allowed by the connected dl-dht node mode");
+      }
+      throw new Error(res.err);
+    }
   }
 
   async lookupDiscovery(discoveryKey: string): Promise<string[]> {
@@ -162,7 +253,7 @@ export class P2PDhtClient {
     if (res.err) throw new Error(res.err);
     if (!res.value) return [];
 
-    const txt = Buffer.from(res.value).toString("utf8").trim();
+    const txt = u8To(res.value, "utf8").trim();
     return txt ? (JSON.parse(txt) as string[]) : [];
   }
 
@@ -246,6 +337,59 @@ export class P2PDhtClient {
           return resp;
         } catch (e) {
           lastErr = e;
+
+          if (this.isRetryableMuxerError(e)) {
+            dlog("stale connection detected; resetting and retrying:", e);
+            await this.resetPeerConnection();
+
+            try {
+              await withTimeout(
+                this.libp2p.dial(t),
+                this.dialTimeoutMs,
+                `dial timeout to ${t.toString()}`
+              );
+
+              const stream: any = await withTimeout(
+                this.libp2p.dialProtocol(t, pid),
+                this.streamTimeoutMs,
+                `open stream timeout to ${t.toString()} (${pid})`
+              );
+              dlog("retry using protocol:", pid);
+
+              const reqToSend: any = { ...reqObj };
+              if (reqToSend.value != null) {
+                const u8 = toU8(reqToSend.value);
+                reqToSend.value = Buffer.from(u8).toString("base64");
+              }
+              if (reqToSend.record != null) {
+                const u8 = toU8(reqToSend.record);
+                reqToSend.record = Buffer.from(u8).toString("base64");
+              }
+              const json = JSON.stringify(reqToSend) + "\n";
+
+              await pipe([u8From(json, "utf8")], stream.sink);
+              if (typeof stream.closeWrite === "function") {
+                await stream.closeWrite();
+              }
+
+              const got = await readOneJsonWithTimeout(stream.source, 4000);
+              const clean = got.replace(/\u0000+$/g, "").trim();
+              dlog("raw reply after retry:", clean ? `(len=${clean.length}) ${preview(clean)}` : "(empty)");
+
+              try { await stream.close?.(); } catch {}
+
+              if (!clean) return {} as any;
+
+              const resp = JSON.parse(clean, (k, v) =>
+                k === "value" && typeof v === "string"
+                  ? Uint8Array.from(Buffer.from(v, "base64"))
+                  : v
+              );
+              return resp;
+            } catch (retryErr) {
+              lastErr = retryErr;
+            }
+          }
         }
       }
     }
@@ -263,6 +407,22 @@ export class P2PDhtClient {
       targets.push(t);
     }
     return targets;
+  }
+
+  private async resetPeerConnection(): Promise<void> {
+    try {
+      const cm = this.libp2p.getConnections?.(this.remotePeerIdStr);
+      if (Array.isArray(cm)) {
+        for (const c of cm) {
+          try { await c.close(); } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  private isRetryableMuxerError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return /muxer already closed|stream reset|connection ended|connection closed/i.test(msg);
   }
 }
 

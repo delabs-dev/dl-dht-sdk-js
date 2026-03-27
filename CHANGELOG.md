@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.4 — 2026-03-26
+- Added capability helpers: `getCapabilities`, `canPutObject`, `canPinObject`,
+  `canUnpinObject`, `canAnnounceDiscovery`, `retainObject`, `canRetainObject`
+- Updated node mode docs for `client`, `edge`, and `server`
+- Extended status response typing with mode and capability flags
+- Improved error handling for client-mode restricted operations
+- Added tests for node mode behaviors
+
 ## 0.1.0-beta.3 — 2026-03-17
 - Added object APIs: `putObject`, `getObject`, `fetchObject`, `findProviders`
 - Added pin management: `pinObject`, `unpinObject`
